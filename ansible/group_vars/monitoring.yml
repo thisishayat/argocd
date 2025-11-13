@@ -1,0 +1,260 @@
+# Monitoring Stack Configuration
+# Ostad Capstone Project - Prometheus, Grafana, Loki Setup
+
+# Prometheus Configuration
+prometheus:
+  version: "2.47.2"
+  port: 9090
+  config_dir: "/etc/prometheus"
+  data_dir: "/var/lib/prometheus"
+  log_dir: "/var/log/prometheus"
+  user: "prometheus"
+  group: "prometheus"
+  retention_time: "15d"
+  retention_size: "10GB"
+  
+  # Global Configuration
+  global:
+    scrape_interval: "15s"
+    evaluation_interval: "15s"
+    external_labels:
+      cluster: "{{ project_name }}-{{ environment }}"
+      
+  # Alerting Configuration
+  alerting:
+    alertmanagers:
+      - static_configs:
+          - targets:
+            - "localhost:9093"
+            
+  # Rule Files
+  rule_files:
+    - "/etc/prometheus/rules/*.yml"
+    
+  # Scrape Configurations
+  scrape_configs:
+    - job_name: "prometheus"
+      static_configs:
+        - targets: ["localhost:9090"]
+    
+    - job_name: "node-exporter"
+      static_configs:
+        - targets:
+          - "{{ hostvars['k8s-master']['private_ip'] }}:9100"
+          - "{{ hostvars['k8s-worker-1']['private_ip'] }}:9100"
+          - "{{ hostvars['k8s-worker-2']['private_ip'] }}:9100"
+    
+    - job_name: "kubernetes-apiservers"
+      kubernetes_sd_configs:
+        - role: endpoints
+      scheme: https
+      tls_config:
+        ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+      bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+      relabel_configs:
+        - source_labels: [__meta_kubernetes_namespace, __meta_kubernetes_service_name, __meta_kubernetes_endpoint_port_name]
+          action: keep
+          regex: default;kubernetes;https
+
+# Node Exporter Configuration
+node_exporter:
+  version: "1.6.1"
+  port: 9100
+  user: "node_exporter"
+  group: "node_exporter"
+  config_dir: "/etc/node_exporter"
+  log_dir: "/var/log/node_exporter"
+  
+  # Collectors Configuration
+  collectors:
+    enabled:
+      - systemd
+      - processes
+      - tcpstat
+      - meminfo_numa
+    disabled:
+      - mdadm
+
+# Grafana Configuration
+grafana:
+  version: "10.2.0"
+  port: 3000
+  config_dir: "/etc/grafana"
+  data_dir: "/var/lib/grafana"
+  log_dir: "/var/log/grafana"
+  user: "grafana"
+  group: "grafana"
+  
+  # Admin Configuration
+  admin:
+    user: "admin"
+    password: "{{ grafana_admin_password | default('admin123!') }}"
+    
+  # Database Configuration
+  database:
+    type: "sqlite3"
+    path: "/var/lib/grafana/grafana.db"
+    
+  # Security Configuration
+  security:
+    admin_user: "admin"
+    admin_password: "{{ grafana_admin_password | default('admin123!') }}"
+    secret_key: "{{ grafana_secret_key | default('SW2YcwTIb9zpOOhoPsMm') }}"
+    
+  # Datasources
+  datasources:
+    - name: "Prometheus"
+      type: "prometheus"
+      url: "http://localhost:9090"
+      access: "proxy"
+      is_default: true
+      
+    - name: "Loki"
+      type: "loki"
+      url: "http://localhost:3100"
+      access: "proxy"
+
+# Loki Configuration
+loki:
+  version: "2.9.2"
+  port: 3100
+  config_dir: "/etc/loki"
+  data_dir: "/var/lib/loki"
+  log_dir: "/var/log/loki"
+  user: "loki"
+  group: "loki"
+  
+  # Server Configuration
+  server:
+    http_listen_port: 3100
+    log_level: "info"
+    
+  # Ingester Configuration
+  ingester:
+    lifecycler:
+      ring:
+        kvstore:
+          store: "inmemory"
+        replication_factor: 1
+    chunk_idle_period: "1h"
+    max_chunk_age: "1h"
+    chunk_target_size: 1048576
+    chunk_retain_period: "30s"
+    
+  # Schema Configuration
+  schema_config:
+    configs:
+      - from: "2020-10-24"
+        store: "boltdb-shipper"
+        object_store: "filesystem"
+        schema: "v11"
+        index:
+          prefix: "index_"
+          period: "24h"
+          
+  # Storage Configuration
+  storage_config:
+    boltdb_shipper:
+      active_index_directory: "/var/lib/loki/boltdb-shipper-active"
+      cache_location: "/var/lib/loki/boltdb-shipper-cache"
+      shared_store: "filesystem"
+    filesystem:
+      directory: "/var/lib/loki/chunks"
+      
+  # Limits Configuration
+  limits_config:
+    enforce_metric_name: false
+    reject_old_samples: true
+    reject_old_samples_max_age: "168h"
+
+# Promtail Configuration (Log Collection Agent)
+promtail:
+  version: "2.9.2"
+  port: 9080
+  config_dir: "/etc/promtail"
+  user: "promtail"
+  group: "promtail"
+  
+  # Server Configuration
+  server:
+    http_listen_port: 9080
+    
+  # Positions Configuration
+  positions:
+    filename: "/var/log/promtail/positions.yaml"
+    
+  # Client Configuration
+  clients:
+    - url: "http://localhost:3100/loki/api/v1/push"
+    
+  # Scrape Configuration
+  scrape_configs:
+    - job_name: "system"
+      static_configs:
+        - targets:
+            - localhost
+          labels:
+            job: "system-logs"
+            __path__: "/var/log/*.log"
+            
+    - job_name: "kubernetes"
+      static_configs:
+        - targets:
+            - localhost
+          labels:
+            job: "kubernetes-logs"
+            __path__: "/var/log/kubernetes/*.log"
+
+# Alertmanager Configuration
+alertmanager:
+  version: "0.26.0"
+  port: 9093
+  config_dir: "/etc/alertmanager"
+  data_dir: "/var/lib/alertmanager"
+  user: "alertmanager"
+  group: "alertmanager"
+  
+  # Global Configuration
+  global:
+    smtp_smarthost: "localhost:587"
+    smtp_from: "alertmanager@{{ project_name }}.com"
+    
+  # Route Configuration
+  route:
+    group_by: ["alertname"]
+    group_wait: "10s"
+    group_interval: "10s"
+    repeat_interval: "1h"
+    receiver: "web.hook"
+    
+  # Receivers Configuration
+  receivers:
+    - name: "web.hook"
+      webhook_configs:
+        - url: "http://127.0.0.1:5001/"
+
+# Dashboard Configuration
+dashboards:
+  kubernetes_overview:
+    id: 7249
+    title: "Kubernetes Cluster Overview"
+    
+  node_exporter_full:
+    id: 1860
+    title: "Node Exporter Full"
+    
+  kubernetes_pod_monitoring:
+    id: 14623
+    title: "Kubernetes Pod Monitoring"
+    
+  loki_dashboard:
+    id: 13639
+    title: "Loki Dashboard"
+
+# Monitoring Network Configuration
+monitoring_network:
+  prometheus_targets:
+    - "{{ hostvars['k8s-master']['private_ip'] }}:9090"
+    - "{{ hostvars['k8s-master']['private_ip'] }}:9100"
+    - "{{ hostvars['k8s-worker-1']['private_ip'] }}:9100"
+    - "{{ hostvars['k8s-worker-2']['private_ip'] }}:9100"

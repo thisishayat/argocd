@@ -1,0 +1,86 @@
+---
+# Main Site Playbook for Ostad Capstone Project
+# This is the master playbook that orchestrates the entire deployment
+
+- name: "Ostad Capstone Project - Infrastructure Setup"
+  hosts: all
+  gather_facts: true
+  become: true
+  tags: ['always']
+  
+  pre_tasks:
+    - name: Display deployment information
+      debug:
+        msg: |
+          ==========================================================
+          🚀 Ostad Capstone Project Deployment
+          ==========================================================
+          Project: {{ project_name }}
+          Environment: {{ environment }}
+          Owner: {{ owner }}
+          Timestamp: {{ ansible_date_time.iso8601 }}
+          ==========================================================
+      run_once: true
+      delegate_to: localhost
+
+    - name: Verify Ansible version
+      assert:
+        that:
+          - ansible_version.full is version('2.10', '>=')
+        fail_msg: "Ansible version 2.10 or higher is required"
+        success_msg: "Ansible version {{ ansible_version.full }} is compatible"
+      run_once: true
+      delegate_to: localhost
+
+  roles:
+    - role: common
+      tags: ['common', 'base']
+      
+- name: "Infrastructure Health Check"
+  import_playbook: playbooks/healthcheck.yml
+  tags: ['health', 'check']
+
+- name: "Kubernetes Cluster Setup"
+  import_playbook: playbooks/kubernetes.yml
+  tags: ['kubernetes', 'k8s']
+
+- name: "Monitoring Stack Deployment"
+  import_playbook: playbooks/monitoring.yml
+  tags: ['monitoring', 'prometheus', 'grafana', 'loki']
+
+- name: "Post-Deployment Verification"
+  hosts: all
+  gather_facts: false
+  become: true
+  tags: ['verify', 'post']
+  
+  tasks:
+    - name: Final system health check
+      include_role:
+        name: health_check
+        
+    - name: Display deployment summary
+      debug:
+        msg: |
+          ==========================================================
+          ✅ Deployment Summary
+          ==========================================================
+          ✓ Infrastructure health checked
+          ✓ Kubernetes cluster configured
+          ✓ Monitoring stack deployed
+          ✓ All services verified
+          ==========================================================
+          
+          🔗 Access Points:
+          • Kubernetes Dashboard: https://{{ hostvars['k8s-master']['ansible_host'] }}:8443
+          • Grafana: http://{{ hostvars['k8s-master']['ansible_host'] }}:3000
+          • Prometheus: http://{{ hostvars['k8s-master']['ansible_host'] }}:9090
+          
+          📋 Next Steps:
+          1. Access Grafana with admin/{{ grafana.admin.password }}
+          2. Import dashboards from /opt/dashboards/
+          3. Configure alerting rules as needed
+          4. Deploy your applications using kubectl
+          ==========================================================
+      run_once: true
+      delegate_to: localhost

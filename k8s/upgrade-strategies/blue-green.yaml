@@ -1,0 +1,137 @@
+# Blue-Green Deployment Strategy
+
+# Blue Environment (Current Production)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ostad-capstone-blue
+  namespace: prod
+  labels:
+    app: ostad-capstone
+    strategy: blue-green
+    environment: blue
+    version: v1.0.0
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: ostad-capstone
+      environment: blue
+  template:
+    metadata:
+      labels:
+        app: ostad-capstone
+        strategy: blue-green
+        environment: blue
+        version: v1.0.0
+    spec:
+      containers:
+      - name: ostad-app
+        image: ostad-capstone:v1.0.0
+        ports:
+        - containerPort: 3000
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+---
+# Green Environment (New Version)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ostad-capstone-green
+  namespace: prod
+  labels:
+    app: ostad-capstone
+    strategy: blue-green
+    environment: green
+    version: v2.0.0
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: ostad-capstone
+      environment: green
+  template:
+    metadata:
+      labels:
+        app: ostad-capstone
+        strategy: blue-green
+        environment: green
+        version: v2.0.0
+    spec:
+      containers:
+      - name: ostad-app
+        image: ostad-capstone:v2.0.0
+        ports:
+        - containerPort: 3000
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+---
+# Service - Switch between blue and green by changing selector
+apiVersion: v1
+kind: Service
+metadata:
+  name: ostad-capstone-bluegreen-service
+  namespace: prod
+  labels:
+    app: ostad-capstone
+    strategy: blue-green
+spec:
+  selector:
+    app: ostad-capstone
+    environment: blue  # Change to "green" to switch traffic
+  ports:
+  - port: 80
+    targetPort: 3000
+---
+# Testing Service for Green environment
+apiVersion: v1
+kind: Service
+metadata:
+  name: ostad-capstone-green-test-service
+  namespace: prod
+  labels:
+    app: ostad-capstone
+    strategy: blue-green
+    purpose: testing
+spec:
+  selector:
+    app: ostad-capstone
+    environment: green
+  ports:
+  - port: 80
+    targetPort: 3000
+  type: LoadBalancer  # For external testing access

@@ -1,0 +1,153 @@
+---
+# Health check tasks for all nodes
+# Ostad Capstone Project - Comprehensive system health verification
+
+- name: Check system uptime
+  command: uptime
+  register: system_uptime
+  changed_when: false
+
+- name: Display system uptime
+  debug:
+    msg: "System uptime: {{ system_uptime.stdout }}"
+
+- name: Check disk usage
+  shell: df -h /
+  register: disk_usage
+  changed_when: false
+
+- name: Display disk usage
+  debug:
+    msg: "Root filesystem usage: {{ disk_usage.stdout_lines[1] }}"
+
+- name: Check memory usage
+  shell: free -h
+  register: memory_usage
+  changed_when: false
+
+- name: Display memory usage
+  debug:
+    msg: "Memory usage: {{ memory_usage.stdout }}"
+
+- name: Check CPU load
+  shell: cat /proc/loadavg
+  register: cpu_load
+  changed_when: false
+
+- name: Display CPU load
+  debug:
+    msg: "CPU load: {{ cpu_load.stdout }}"
+
+- name: Check network connectivity to Google DNS
+  command: ping -c 3 8.8.8.8
+  register: network_check
+  failed_when: network_check.rc != 0
+  changed_when: false
+
+- name: Verify Docker/Containerd is running
+  systemd:
+    name: containerd
+  register: containerd_status
+
+- name: Display containerd status
+  debug:
+    msg: "Containerd is {{ containerd_status.status.ActiveState }}"
+
+- name: Check if kubelet is running (if installed)
+  systemd:
+    name: kubelet
+  register: kubelet_status
+  ignore_errors: true
+
+- name: Display kubelet status
+  debug:
+    msg: "Kubelet is {{ kubelet_status.status.ActiveState | default('not installed') }}"
+  when: kubelet_status.status is defined
+
+- name: Check available system updates
+  apt:
+    list: upgradable
+  register: available_updates
+  changed_when: false
+
+- name: Display available updates count
+  debug:
+    msg: "Available updates: {{ available_updates.stdout_lines | length }}"
+
+- name: Verify SSH connectivity
+  wait_for_connection:
+    timeout: 10
+
+- name: Check system security - failed login attempts
+  shell: lastb | wc -l
+  register: failed_logins
+  changed_when: false
+  ignore_errors: true
+
+- name: Display failed login attempts
+  debug:
+    msg: "Failed login attempts: {{ failed_logins.stdout | default('unable to check') }}"
+
+- name: Check listening ports
+  shell: netstat -tlnp
+  register: listening_ports
+  changed_when: false
+
+- name: Check for critical system errors in logs
+  shell: journalctl --priority=0..2 --since="1 hour ago" --no-pager | wc -l
+  register: critical_errors
+  changed_when: false
+
+- name: Display critical errors count
+  debug:
+    msg: "Critical system errors in the last hour: {{ critical_errors.stdout }}"
+
+- name: Check filesystem integrity (ext4 filesystems only)
+  shell: tune2fs -l {{ item }} | grep "Filesystem state"
+  register: fs_integrity
+  with_items:
+    - "/dev/xvda1"
+    - "/dev/nvme0n1p1"
+  failed_when: false
+  changed_when: false
+
+- name: Display filesystem integrity
+  debug:
+    msg: "Filesystem {{ item.item }}: {{ item.stdout | default('not accessible or not ext4') }}"
+  loop: "{{ fs_integrity.results }}"
+  when: item.stdout is defined
+
+- name: Check for zombie processes
+  shell: ps aux | awk '{print $8}' | grep -c Z || true
+  register: zombie_processes
+  changed_when: false
+
+- name: Display zombie processes
+  debug:
+    msg: "Zombie processes count: {{ zombie_processes.stdout }}"
+
+- name: Generate health check report
+  template:
+    src: health_report.txt.j2
+    dest: /tmp/health_check_report_{{ ansible_date_time.epoch }}.txt
+    mode: '0644'
+
+- name: Display health check summary
+  debug:
+    msg: |
+      ======== HEALTH CHECK SUMMARY ========
+      Hostname: {{ ansible_hostname }}
+      IP Address: {{ ansible_default_ipv4.address }}
+      OS: {{ ansible_distribution }} {{ ansible_distribution_version }}
+      Kernel: {{ ansible_kernel }}
+      Architecture: {{ ansible_architecture }}
+      CPU Cores: {{ ansible_processor_vcpus }}
+      Total Memory: {{ ansible_memtotal_mb }} MB
+      Uptime: {{ system_uptime.stdout }}
+      Disk Usage (Root): {{ (disk_usage.stdout_lines[1].split()[4] | replace('%', '') | int) }}%
+      Available Updates: {{ available_updates.stdout_lines | length }}
+      Network: {{ 'OK' if network_check.rc == 0 else 'FAILED' }}
+      Containerd: {{ containerd_status.status.ActiveState }}
+      Critical Errors: {{ critical_errors.stdout }}
+      Health Check Report: /tmp/health_check_report_{{ ansible_date_time.epoch }}.txt
+      =====================================

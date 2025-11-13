@@ -1,0 +1,337 @@
+---
+# Kubernetes Cluster Setup Playbook
+# Ostad Capstone Project - Kubeadm Installation and Configuration
+
+- name: "Prerequisites Check"
+  hosts: kubernetes_cluster
+  gather_facts: true
+  become: true
+  tags: ['prerequisites', 'check']
+  
+  tasks:
+    - name: Verify system requirements
+      assert:
+        that:
+          - ansible_memtotal_mb >= (system_requirements.min_ram_gb * 1024)
+          - ansible_processor_vcpus >= system_requirements.min_cpu_cores
+        fail_msg: "System does not meet minimum requirements"
+        success_msg: "System requirements satisfied"
+        
+    - name: Check if swap is disabled
+      shell: swapon --show
+      register: swap_status
+      changed_when: false
+      failed_when: false
+      
+    - name: Verify container runtime prerequisites
+      systemd:
+        name: containerd
+        state: started
+        enabled: true
+      register: containerd_status
+      failed_when: false
+
+- name: "Common Kubernetes Setup"
+  hosts: kubernetes_cluster
+  gather_facts: true
+  become: true
+  tags: ['common', 'kubernetes', 'install']
+  
+  pre_tasks:
+    - name: Set hostname based on inventory
+      hostname:
+        name: "{{ inventory_hostname }}"
+        
+    - name: Update /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        line: "{{ ansible_default_ipv4.address }} {{ inventory_hostname }}"
+        state: present
+        
+  roles:
+    - role: kubernetes_common
+      
+- name: "Control Plane Setup"
+  hosts: control_plane
+  gather_facts: true
+  become: true
+  tags: ['control-plane', 'master', 'init']
+  
+  tasks:
+    - name: Check if cluster is already initialized
+      stat:
+        path: /etc/kubernetes/admin.conf
+      register: kubeconfig_exists
+      
+    - name: Initialize Kubernetes cluster
+      include_role:
+        name: kubernetes_master
+      when: not kubeconfig_exists.stat.exists
+      
+    - name: Generate join command for workers
+      shell: kubeadm token create --print-join-command
+      register: join_command
+      changed_when: false
+      
+    - name: Save join command to local file
+      copy:
+        content: "{{ join_command.stdout }}"
+        dest: "/tmp/kubernetes_join_command.sh"
+        mode: '0755'
+      delegate_to: localhost
+      become: false
+      
+    - name: Set join command fact
+      set_fact:
+        kubernetes_join_command: "{{ join_command.stdout }}"
+      
+    - name: Distribute join command to workers
+      set_fact:
+        kubernetes_join_command: "{{ hostvars['k8s-master']['kubernetes_join_command'] }}"
+      delegate_to: "{{ item }}"
+      delegate_facts: true
+      loop: "{{ groups['worker_nodes'] }}"
+
+- name: "Worker Nodes Setup"
+  hosts: worker_nodes
+  gather_facts: true
+  become: true
+  serial: 1
+  tags: ['worker-nodes', 'join']
+  
+  tasks:
+    - name: Check if node is already joined
+      stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: kubelet_conf_exists
+      
+    - name: Join worker to cluster
+      shell: "{{ kubernetes_join_command }}"
+      register: join_result
+      when: 
+        - not kubelet_conf_exists.stat.exists
+        - kubernetes_join_command is defined
+      retries: 3
+      delay: 10
+      
+    - name: Enable and start kubelet
+      systemd:
+        name: kubelet
+        enabled: true
+        state: started
+        daemon_reload: true
+
+- name: "Install CNI Plugin"
+  hosts: control_plane
+  become: true
+  tags: ['cni', 'network']
+  
+  tasks:
+    - name: Install Flannel CNI
+      shell: kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      when: cni_plugin == "flannel"
+      retries: 3
+      delay: 10
+      
+    - name: Install Calico CNI
+      shell: kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/calico.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      when: cni_plugin == "calico"
+      retries: 3
+      delay: 10
+
+- name: "Install Kubernetes Add-ons"
+  hosts: control_plane
+  become: true
+  tags: ['addons', 'dashboard', 'metrics']
+  
+  tasks:
+    - name: Wait for all nodes to be ready
+      shell: kubectl get nodes --no-headers | grep -c " Ready "
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: ready_nodes
+      until: ready_nodes.stdout | int == groups['kubernetes_cluster'] | length
+      retries: 30
+      delay: 10
+      
+    - name: Install Kubernetes Dashboard
+      shell: kubectl apply -f https://raw.githubusercontent.com/kubernetes/dashboard/{{ kubernetes_addons.dashboard.version }}/aio/deploy/recommended.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      when: kubernetes_addons.dashboard.enabled
+      
+    - name: Create Dashboard admin user
+      k8s:
+        definition:
+          apiVersion: v1
+          kind: ServiceAccount
+          metadata:
+            name: admin-user
+            namespace: kubernetes-dashboard
+        kubeconfig: /etc/kubernetes/admin.conf
+      when: kubernetes_addons.dashboard.enabled
+      
+    - name: Create Dashboard admin user ClusterRoleBinding
+      k8s:
+        definition:
+          apiVersion: rbac.authorization.k8s.io/v1
+          kind: ClusterRoleBinding
+          metadata:
+            name: admin-user
+          roleRef:
+            apiGroup: rbac.authorization.k8s.io
+            kind: ClusterRole
+            name: cluster-admin
+          subjects:
+          - kind: ServiceAccount
+            name: admin-user
+            namespace: kubernetes-dashboard
+        kubeconfig: /etc/kubernetes/admin.conf
+      when: kubernetes_addons.dashboard.enabled
+      
+    - name: Get Dashboard admin token
+      shell: kubectl -n kubernetes-dashboard create token admin-user --duration=24h
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: dashboard_token
+      when: kubernetes_addons.dashboard.enabled
+      
+    - name: Save Dashboard token
+      copy:
+        content: "{{ dashboard_token.stdout }}"
+        dest: "/tmp/dashboard_token.txt"
+        mode: '0600'
+      when: kubernetes_addons.dashboard.enabled
+      
+    - name: Install Metrics Server
+      shell: kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/download/{{ kubernetes_addons.metrics_server.version }}/components.yaml
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      when: kubernetes_addons.metrics_server.enabled
+
+- name: "Cluster Verification"
+  hosts: control_plane
+  become: true
+  tags: ['verify', 'test']
+  
+  tasks:
+    - name: Verify cluster status
+      shell: kubectl get nodes -o wide
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: cluster_nodes
+      
+    - name: Verify system pods
+      shell: kubectl get pods -n kube-system
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: system_pods
+      
+    - name: Check cluster info
+      shell: kubectl cluster-info
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: cluster_info
+      
+    - name: Test cluster functionality
+      k8s:
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: nginx-test
+            namespace: default
+          spec:
+            replicas: 2
+            selector:
+              matchLabels:
+                app: nginx-test
+            template:
+              metadata:
+                labels:
+                  app: nginx-test
+              spec:
+                containers:
+                - name: nginx
+                  image: nginx:alpine
+                  ports:
+                  - containerPort: 80
+        kubeconfig: /etc/kubernetes/admin.conf
+      register: test_deployment
+      
+    - name: Verify test deployment
+      shell: kubectl get deployment nginx-test -o jsonpath='{.status.readyReplicas}'
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf
+      register: ready_replicas
+      until: ready_replicas.stdout | int == 2
+      retries: 10
+      delay: 15
+      
+    - name: Clean up test deployment
+      k8s:
+        name: nginx-test
+        api_version: apps/v1
+        kind: Deployment
+        namespace: default
+        state: absent
+        kubeconfig: /etc/kubernetes/admin.conf
+        
+    - name: Setup kubectl for ubuntu user
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/ubuntu/.kube/config
+        owner: ubuntu
+        group: ubuntu
+        mode: '0600'
+        remote_src: true
+      
+    - name: Create .kube directory for ubuntu user
+      file:
+        path: /home/ubuntu/.kube
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0755'
+
+- name: "Display Cluster Information"
+  hosts: control_plane
+  become: false
+  tags: ['info', 'summary']
+  
+  tasks:
+    - name: Display cluster summary
+      debug:
+        msg: |
+          🎉 Kubernetes Cluster Setup Complete!
+          =====================================
+          
+          Cluster Information:
+          • Master Node: {{ ansible_host }}
+          • Worker Nodes: {{ groups['worker_nodes'] | length }}
+          • CNI Plugin: {{ cni_plugin }}
+          • Kubernetes Version: {{ kubernetes_version }}
+          
+          Access Information:
+          • kubeconfig: /home/ubuntu/.kube/config
+          • Dashboard Token: /tmp/dashboard_token.txt
+          
+          Verification Commands:
+          • kubectl get nodes
+          • kubectl get pods --all-namespaces
+          • kubectl cluster-info
+          
+          Dashboard Access:
+          1. kubectl proxy --address='0.0.0.0' --disable-filter=true
+          2. Open: http://{{ ansible_host }}:8001/api/v1/namespaces/kubernetes-dashboard/services/https:kubernetes-dashboard:/proxy/
+          3. Use token from /tmp/dashboard_token.txt
+          
+          Next Steps:
+          • Configure ingress controller
+          • Deploy monitoring stack
+          • Set up persistent storage
+          • Deploy applications

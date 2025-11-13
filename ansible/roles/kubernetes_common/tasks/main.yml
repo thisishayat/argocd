@@ -1,0 +1,175 @@
+---
+# Kubernetes common setup tasks
+# Ostad Capstone Project - Kubernetes prerequisites
+
+- name: Disable swap permanently
+  mount:
+    name: "swap"
+    fstype: swap
+    state: absent
+
+- name: Disable swap for current session
+  command: swapoff -a
+  changed_when: false
+
+- name: Load kernel modules
+  modprobe:
+    name: "{{ item }}"
+    state: present
+  loop:
+    - overlay
+    - br_netfilter
+
+- name: Configure kernel modules to load at boot
+  lineinfile:
+    path: /etc/modules-load.d/k8s.conf
+    line: "{{ item }}"
+    create: true
+  loop:
+    - overlay
+    - br_netfilter
+
+- name: Configure sysctl parameters for Kubernetes
+  sysctl:
+    name: "{{ item.key }}"
+    value: "{{ item.value }}"
+    state: present
+    sysctl_file: /etc/sysctl.d/k8s.conf
+    reload: true
+  loop:
+    - { key: 'net.bridge.bridge-nf-call-iptables', value: '1' }
+    - { key: 'net.bridge.bridge-nf-call-ip6tables', value: '1' }
+    - { key: 'net.ipv4.ip_forward', value: '1' }
+
+- name: Install containerd
+  apt:
+    name: 
+      - containerd.io
+      - apt-transport-https
+      - ca-certificates
+      - curl
+      - gnupg
+      - lsb-release
+    state: present
+    update_cache: true
+
+- name: Add Docker GPG key
+  apt_key:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    state: present
+
+- name: Add Docker repository
+  apt_repository:
+    repo: "deb [arch=amd64] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+    state: present
+
+- name: Create containerd config directory
+  file:
+    path: "{{ containerd_config_dir }}"
+    state: directory
+    mode: '0755'
+
+- name: Generate containerd configuration
+  shell: containerd config default > {{ containerd_config_dir }}/config.toml
+  args:
+    creates: "{{ containerd_config_dir }}/config.toml"
+
+- name: Configure containerd to use systemd cgroup driver
+  lineinfile:
+    path: "{{ containerd_config_dir }}/config.toml"
+    regexp: '^\s*SystemdCgroup\s*='
+    line: '            SystemdCgroup = true'
+  notify: restart containerd
+
+- name: Add Kubernetes GPG key
+  apt_key:
+    url: https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/Release.key
+    state: present
+
+- name: Add Kubernetes repository
+  apt_repository:
+    repo: "deb https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/ /"
+    state: present
+
+- name: Install Kubernetes components
+  apt:
+    name:
+      - "kubelet={{ kubernetes_full_version }}"
+      - "kubeadm={{ kubernetes_full_version }}"
+      - "kubectl={{ kubernetes_full_version }}"
+    state: present
+    update_cache: true
+
+- name: Hold Kubernetes packages
+  dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubelet
+    - kubeadm
+    - kubectl
+
+- name: Configure kubelet
+  template:
+    src: kubelet-config.yaml.j2
+    dest: /var/lib/kubelet/config.yaml
+    mode: '0644'
+  notify: restart kubelet
+
+- name: Create kubelet systemd drop-in directory
+  file:
+    path: /etc/systemd/system/kubelet.service.d
+    state: directory
+    mode: '0755'
+
+- name: Configure kubelet systemd service
+  template:
+    src: 10-kubeadm.conf.j2
+    dest: /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+    mode: '0644'
+  notify: restart kubelet
+
+- name: Configure firewall for Kubernetes
+  ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop:
+    - "{{ kubeadm_config.api_server_port }}"  # Kubernetes API
+    - "2379:2380"  # etcd
+    - "10250"      # kubelet API
+    - "10259"      # kube-scheduler
+    - "10257"      # kube-controller-manager
+    - "30000:32767" # NodePort services
+  when: inventory_hostname in groups['control_plane']
+
+- name: Configure firewall for worker nodes
+  ufw:
+    rule: allow
+    port: "{{ item }}"
+    proto: tcp
+  loop:
+    - "10250"      # kubelet API
+    - "30000:32767" # NodePort services
+  when: inventory_hostname in groups['worker_nodes']
+
+- name: Allow flannel VXLAN traffic
+  ufw:
+    rule: allow
+    port: "8472"
+    proto: udp
+  when: cni_plugin == "flannel"
+
+- name: Start and enable containerd
+  systemd:
+    name: containerd
+    state: started
+    enabled: true
+    daemon_reload: true
+
+- name: Start and enable kubelet
+  systemd:
+    name: kubelet
+    state: started
+    enabled: true
+    daemon_reload: true

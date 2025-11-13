@@ -1,0 +1,124 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ostad-app-config
+  namespace: stage
+  labels:
+    app: ostad-capstone
+    environment: stage
+data:
+  NODE_ENV: "staging"
+  API_URL: "http://ostad-capstone-stage.local"
+  THEME_INDEX: "1"  # Blue theme for stage
+  LOG_LEVEL: "info"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ostad-capstone-stage
+  namespace: stage
+  labels:
+    app: ostad-capstone
+    environment: stage
+    version: v1.0.0
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  selector:
+    matchLabels:
+      app: ostad-capstone
+      environment: stage
+  template:
+    metadata:
+      labels:
+        app: ostad-capstone
+        environment: stage
+        version: v1.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "3000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: ostad-app
+        image: ostad-capstone:stage-latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 3000
+          name: http
+          protocol: TCP
+        env:
+        - name: NODE_ENV
+          valueFrom:
+            configMapKeyRef:
+              name: ostad-app-config
+              key: NODE_ENV
+        - name: API_URL
+          valueFrom:
+            configMapKeyRef:
+              name: ostad-app-config
+              key: API_URL
+        - name: THEME_INDEX
+          valueFrom:
+            configMapKeyRef:
+              name: ostad-app-config
+              key: THEME_INDEX
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: ostad-app-config
+              key: LOG_LEVEL
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "200m"
+          limits:
+            memory: "512Mi"
+            cpu: "400m"
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /
+            port: 3000
+          initialDelaySeconds: 15
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        securityContext:
+          runAsNonRoot: true
+          runAsUser: 1000
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop:
+            - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ostad-capstone-stage-service
+  namespace: stage
+  labels:
+    app: ostad-capstone
+    environment: stage
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 3000
+    protocol: TCP
+    name: http
+  selector:
+    app: ostad-capstone
+    environment: stage

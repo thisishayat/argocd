@@ -1,0 +1,180 @@
+---
+# Kubernetes master node setup tasks
+# Ostad Capstone Project - Control plane initialization
+
+- name: Check if Kubernetes cluster is already initialized
+  stat:
+    path: /etc/kubernetes/admin.conf
+  register: cluster_initialized
+
+- name: Generate kubeadm configuration
+  template:
+    src: kubeadm-config.yaml.j2
+    dest: /tmp/kubeadm-config.yaml
+    mode: '0644'
+  when: not cluster_initialized.stat.exists
+
+- name: Initialize Kubernetes cluster
+  command: >
+    kubeadm init
+    --config=/tmp/kubeadm-config.yaml
+    --upload-certs
+  register: kubeadm_init_result
+  when: not cluster_initialized.stat.exists
+  changed_when: "'Your Kubernetes control-plane has initialized successfully' in kubeadm_init_result.stdout"
+
+- name: Create .kube directory for root
+  file:
+    path: /root/.kube
+    state: directory
+    mode: '0755'
+  when: not cluster_initialized.stat.exists
+
+- name: Copy admin.conf to .kube/config for root
+  copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /root/.kube/config
+    remote_src: true
+    mode: '0644'
+  when: not cluster_initialized.stat.exists
+
+- name: Create .kube directory for ubuntu user
+  file:
+    path: /home/ubuntu/.kube
+    state: directory
+    owner: ubuntu
+    group: ubuntu
+    mode: '0755'
+  when: not cluster_initialized.stat.exists
+
+- name: Copy admin.conf to ubuntu user .kube/config
+  copy:
+    src: /etc/kubernetes/admin.conf
+    dest: /home/ubuntu/.kube/config
+    remote_src: true
+    owner: ubuntu
+    group: ubuntu
+    mode: '0644'
+  when: not cluster_initialized.stat.exists
+
+- name: Install CNI plugin - Flannel
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: kube-flannel
+  when: cni_plugin == "flannel"
+
+- name: Apply Flannel CNI
+  shell: kubectl apply -f https://github.com/flannel-io/flannel/releases/latest/download/kube-flannel.yml
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when: cni_plugin == "flannel" and not cluster_initialized.stat.exists
+  changed_when: true
+
+- name: Install CNI plugin - Calico
+  shell: kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.26.1/manifests/calico.yaml
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  when: cni_plugin == "calico" and not cluster_initialized.stat.exists
+  changed_when: true
+
+- name: Generate worker node join command
+  command: kubeadm token create --print-join-command
+  register: join_command_raw
+  changed_when: false
+
+- name: Set join command fact
+  set_fact:
+    kubernetes_join_command: "{{ join_command_raw.stdout }}"
+
+- name: Create shared directory for join command
+  file:
+    path: /shared
+    state: directory
+    mode: '0755'
+
+- name: Save join command to shared location
+  copy:
+    content: "{{ kubernetes_join_command }}"
+    dest: /shared/join-command.sh
+    mode: '0755'
+
+- name: Generate certificate key for control plane join
+  command: kubeadm init phase upload-certs --upload-certs
+  register: cert_key_output
+  changed_when: false
+  when: groups['control_plane'] | length > 1
+
+- name: Extract certificate key
+  set_fact:
+    kubernetes_cert_key: "{{ cert_key_output.stdout_lines[-1] }}"
+  when: groups['control_plane'] | length > 1
+
+- name: Generate control plane join command
+  set_fact:
+    kubernetes_control_plane_join_command: "{{ kubernetes_join_command }} --control-plane --certificate-key {{ kubernetes_cert_key }}"
+  when: groups['control_plane'] | length > 1
+
+- name: Save control plane join command
+  copy:
+    content: "{{ kubernetes_control_plane_join_command }}"
+    dest: /shared/join-control-plane-command.sh
+    mode: '0755'
+  when: groups['control_plane'] | length > 1
+
+- name: Wait for all system pods to be ready
+  shell: kubectl get pods -n kube-system --no-headers | grep -v Running | wc -l
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: pod_status
+  until: pod_status.stdout == "0"
+  retries: 30
+  delay: 10
+
+- name: Verify cluster status
+  command: kubectl cluster-info
+  environment:
+    KUBECONFIG: /etc/kubernetes/admin.conf
+  register: cluster_info
+  changed_when: false
+
+- name: Display cluster information
+  debug:
+    var: cluster_info.stdout
+
+- name: Configure kubectl completion for ubuntu user
+  shell: kubectl completion bash >> /home/ubuntu/.bashrc
+  become_user: ubuntu
+  when: not cluster_initialized.stat.exists
+
+- name: Create service account for monitoring
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ServiceAccount
+      metadata:
+        name: monitoring-sa
+        namespace: kube-system
+  when: enable_monitoring
+
+- name: Create cluster role binding for monitoring
+  kubernetes.core.k8s:
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: monitoring-cluster-admin
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: cluster-admin
+      subjects:
+      - kind: ServiceAccount
+        name: monitoring-sa
+        namespace: kube-system
+  when: enable_monitoring

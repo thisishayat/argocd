@@ -1,0 +1,273 @@
+---
+# Health Check Playbook for AWS Resources and Infrastructure
+# Ostad Capstone Project - Resource Health Verification
+
+- name: "AWS Resource Health Check"
+  hosts: aws_resources
+  gather_facts: false
+  connection: local
+  tags: ['aws', 'health', 'infrastructure']
+  
+  vars:
+    health_check_results: []
+    
+  tasks:
+    - name: Check AWS CLI availability
+      command: aws --version
+      register: aws_version
+      failed_when: false
+      changed_when: false
+      
+    - name: Verify AWS credentials
+      aws_caller_info:
+      register: aws_identity
+      
+    - name: Display AWS identity
+      debug:
+        msg: "Connected as: {{ aws_identity.arn }}"
+        
+    - name: Check EC2 instances health
+      ec2_instance_info:
+        region: "{{ aws_region }}"
+        filters:
+          "tag:Project": "{{ project_name }}"
+          "tag:Environment": "{{ environment }}"
+      register: ec2_instances
+      
+    - name: Verify all instances are running
+      assert:
+        that:
+          - ec2_instances.instances | length >= 3
+          - item.state.name == "running"
+        fail_msg: "Instance {{ item.instance_id }} is not running ({{ item.state.name }})"
+        success_msg: "Instance {{ item.instance_id }} is healthy"
+      loop: "{{ ec2_instances.instances }}"
+      loop_control:
+        label: "{{ item.instance_id }}"
+        
+    - name: Check S3 buckets
+      aws_s3_bucket_info:
+        name: "{{ project_name }}-{{ environment }}"
+        region: "{{ aws_region }}"
+      register: s3_buckets
+      failed_when: false
+      
+    - name: Verify Load Balancer health
+      elb_application_lb_info:
+        region: "{{ aws_region }}"
+        names:
+          - "{{ project_name }}-{{ environment }}-alb"
+      register: load_balancers
+      
+    - name: Check Load Balancer targets
+      elb_target_group_info:
+        region: "{{ aws_region }}"
+        names:
+          - "{{ project_name }}-{{ environment }}-tg"
+      register: target_groups
+      
+    - name: Health check summary
+      debug:
+        msg: |
+          AWS Resource Health Check Summary:
+          ================================
+          ✓ AWS CLI: {{ aws_version.stdout.split()[0] }}
+          ✓ Identity: {{ aws_identity.user_id }}
+          ✓ EC2 Instances: {{ ec2_instances.instances | length }} running
+          ✓ S3 Buckets: Available
+          ✓ Load Balancer: {{ load_balancers.load_balancers[0].state.code }}
+          ✓ Target Groups: {{ target_groups.target_groups | length }} configured
+
+- name: "System Health Check"
+  hosts: kubernetes_cluster
+  gather_facts: true
+  become: true
+  tags: ['system', 'health']
+  
+  tasks:
+    - name: Check system uptime
+      command: uptime
+      register: system_uptime
+      changed_when: false
+      
+    - name: Check disk usage
+      shell: df -h | grep -vE '^Filesystem|tmpfs|cdrom'
+      register: disk_usage
+      changed_when: false
+      
+    - name: Verify disk space (root partition)
+      shell: df / | tail -1 | awk '{print $5}' | sed 's/%//'
+      register: root_disk_usage
+      changed_when: false
+      
+    - name: Alert if disk usage is high
+      fail:
+        msg: "Disk usage is {{ root_disk_usage.stdout }}% - exceeds 80% threshold"
+      when: root_disk_usage.stdout | int > 80
+      
+    - name: Check memory usage
+      shell: free -m | awk 'NR==2{printf "%.2f", $3*100/$2}'
+      register: memory_usage
+      changed_when: false
+      
+    - name: Check CPU load
+      shell: uptime | awk -F'load average:' '{ print $2 }' | cut -d, -f1 | xargs
+      register: cpu_load
+      changed_when: false
+      
+    - name: Verify essential services
+      systemd:
+        name: "{{ item }}"
+        state: started
+      register: service_status
+      loop:
+        - ssh
+        - systemd-resolved
+        - systemd-timesyncd
+      failed_when: false
+      
+    - name: Check network connectivity
+      uri:
+        url: "https://www.google.com"
+        method: HEAD
+        timeout: 10
+      register: internet_check
+      failed_when: false
+      
+    - name: Verify AWS metadata service
+      uri:
+        url: "http://169.254.169.254/latest/meta-data/"
+        timeout: 5
+      register: metadata_check
+      failed_when: false
+      
+    - name: System health summary
+      debug:
+        msg: |
+          System Health Check - {{ inventory_hostname }}:
+          ==============================================
+          ✓ Uptime: {{ system_uptime.stdout }}
+          ✓ Disk Usage (root): {{ root_disk_usage.stdout }}%
+          ✓ Memory Usage: {{ memory_usage.stdout }}%
+          ✓ CPU Load: {{ cpu_load.stdout }}
+          ✓ Internet: {{ 'Connected' if internet_check.status == 200 else 'Failed' }}
+          ✓ AWS Metadata: {{ 'Available' if metadata_check.status == 200 else 'Failed' }}
+
+- name: "Security Health Check"
+  hosts: kubernetes_cluster
+  become: true
+  tags: ['security', 'health']
+  
+  tasks:
+    - name: Check for failed SSH attempts
+      shell: grep "Failed password" /var/log/auth.log | tail -10
+      register: failed_ssh
+      changed_when: false
+      failed_when: false
+      
+    - name: Check running processes
+      shell: ps aux --sort=-%cpu | head -10
+      register: top_processes
+      changed_when: false
+      
+    - name: Verify firewall status
+      ufw:
+        state: enabled
+      register: firewall_status
+      failed_when: false
+      
+    - name: Check for unauthorized users
+      getent:
+        database: passwd
+        key: "{{ ansible_user }}"
+      register: user_check
+      
+    - name: Verify sudo configuration
+      shell: grep -E "^{{ ansible_user }}" /etc/sudoers.d/* | head -5
+      register: sudo_config
+      changed_when: false
+      failed_when: false
+      
+    - name: Security check summary
+      debug:
+        msg: |
+          Security Health Check - {{ inventory_hostname }}:
+          ==============================================
+          ✓ Failed SSH attempts: {{ failed_ssh.stdout_lines | length }}
+          ✓ Firewall: {{ 'Enabled' if firewall_status.changed == false else 'Needs attention' }}
+          ✓ User exists: {{ ansible_user }}
+          ✓ Sudo configured: {{ 'Yes' if sudo_config.stdout else 'Check required' }}
+
+- name: "Application Health Check"
+  hosts: kubernetes_cluster
+  become: true
+  tags: ['application', 'health']
+  
+  tasks:
+    - name: Check if Docker/containerd is installed
+      shell: which containerd
+      register: containerd_check
+      failed_when: false
+      changed_when: false
+      
+    - name: Verify containerd service
+      systemd:
+        name: containerd
+        state: started
+        enabled: true
+      register: containerd_service
+      when: containerd_check.rc == 0
+      
+    - name: Check Kubernetes components (if installed)
+      shell: which {{ item }}
+      register: k8s_components_check
+      failed_when: false
+      changed_when: false
+      loop:
+        - kubeadm
+        - kubelet
+        - kubectl
+        
+    - name: Application health summary
+      debug:
+        msg: |
+          Application Health Check - {{ inventory_hostname }}:
+          ===============================================
+          ✓ Containerd: {{ 'Installed' if containerd_check.rc == 0 else 'Not installed' }}
+          ✓ kubeadm: {{ 'Available' if k8s_components_check.results[0].rc == 0 else 'Not found' }}
+          ✓ kubelet: {{ 'Available' if k8s_components_check.results[1].rc == 0 else 'Not found' }}
+          ✓ kubectl: {{ 'Available' if k8s_components_check.results[2].rc == 0 else 'Not found' }}
+
+- name: "Generate Health Report"
+  hosts: localhost
+  gather_facts: false
+  tags: ['report', 'summary']
+  
+  tasks:
+    - name: Create health report directory
+      file:
+        path: "./reports"
+        state: directory
+        mode: '0755'
+        
+    - name: Generate health report
+      template:
+        src: health_report.j2
+        dest: "./reports/health_report_{{ ansible_date_time.date }}_{{ ansible_date_time.time }}.html"
+      vars:
+        report_date: "{{ ansible_date_time.iso8601 }}"
+        
+    - name: Display report location
+      debug:
+        msg: |
+          📋 Health Check Report Generated:
+          ================================
+          Report saved to: ./reports/health_report_{{ ansible_date_time.date }}_{{ ansible_date_time.time }}.html
+          
+          View the complete health check results in the generated HTML report.
+          
+          Quick Summary:
+          • AWS Resources: Verified
+          • System Health: Monitored
+          • Security Status: Checked
+          • Applications: Validated

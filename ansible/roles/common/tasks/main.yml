@@ -1,0 +1,118 @@
+---
+# Common role tasks for all servers
+# Ostad Capstone Project - Base system configuration
+
+- name: Update package cache
+  apt:
+    update_cache: true
+    cache_valid_time: 3600
+  retries: 3
+  delay: 5
+
+- name: Upgrade all packages
+  apt:
+    upgrade: safe
+  retries: 3
+  delay: 5
+
+- name: Install essential packages
+  apt:
+    name: "{{ system_packages }}"
+    state: present
+  retries: 3
+  delay: 5
+
+- name: Set timezone
+  timezone:
+    name: "{{ timezone }}"
+
+- name: Configure NTP
+  apt:
+    name: chrony
+    state: present
+
+- name: Configure chrony
+  template:
+    src: chrony.conf.j2
+    dest: /etc/chrony/chrony.conf
+    backup: true
+  notify: restart chrony
+
+- name: Configure SSH
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    regexp: "{{ item.regexp }}"
+    line: "{{ item.line }}"
+    state: present
+  loop:
+    - { regexp: '^Port', line: 'Port {{ ssh_config.port }}' }
+    - { regexp: '^Protocol', line: 'Protocol {{ ssh_config.protocol }}' }
+    - { regexp: '^PermitRootLogin', line: 'PermitRootLogin {{ ssh_config.permit_root_login }}' }
+    - { regexp: '^PasswordAuthentication', line: 'PasswordAuthentication {{ ssh_config.password_authentication }}' }
+    - { regexp: '^PubkeyAuthentication', line: 'PubkeyAuthentication {{ ssh_config.pubkey_authentication }}' }
+    - { regexp: '^MaxAuthTries', line: 'MaxAuthTries {{ ssh_config.max_auth_tries }}' }
+  notify: restart ssh
+
+- name: Configure system limits
+  pam_limits:
+    domain: '*'
+    limit_type: "{{ item.type }}"
+    limit_item: "{{ item.item }}"
+    value: "{{ item.value }}"
+  loop:
+    - { type: 'soft', item: 'nofile', value: "{{ resource_limits.nofile_soft }}" }
+    - { type: 'hard', item: 'nofile', value: "{{ resource_limits.nofile_hard }}" }
+    - { type: 'soft', item: 'nproc', value: "{{ resource_limits.nproc_soft }}" }
+    - { type: 'hard', item: 'nproc', value: "{{ resource_limits.nproc_hard }}" }
+
+- name: Configure logrotate
+  template:
+    src: logrotate.conf.j2
+    dest: /etc/logrotate.d/ansible-managed
+    mode: '0644'
+
+- name: Configure firewall
+  ufw:
+    state: "{{ 'enabled' if firewall_enabled else 'disabled' }}"
+    policy: "{{ firewall_default_policy_incoming }}"
+    direction: incoming
+
+- name: Allow SSH through firewall
+  ufw:
+    rule: allow
+    port: "{{ ssh_config.port }}"
+    proto: tcp
+  when: firewall_enabled
+
+- name: Create backup directory
+  file:
+    path: "{{ backup_directory }}"
+    state: directory
+    mode: '0755'
+
+- name: Configure log rotation for system logs
+  logrotate:
+    name: "{{ item }}"
+    path: "/var/log/{{ item }}"
+    options:
+      - daily
+      - rotate 7
+      - compress
+      - delaycompress
+      - missingok
+      - notifempty
+  loop:
+    - syslog
+    - auth.log
+    - daemon.log
+
+- name: Ensure services are running
+  systemd:
+    name: "{{ item }}"
+    state: started
+    enabled: true
+  loop:
+    - ssh
+    - chrony
+    - ufw
+  ignore_errors: true

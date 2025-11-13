@@ -1,0 +1,8 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ostad-production
+  labels:
+    name: ostad-production
+    environment: production
+    app: ostad-capstone

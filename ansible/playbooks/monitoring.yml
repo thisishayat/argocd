@@ -1,0 +1,528 @@
+---
+# Monitoring Stack Deployment Playbook
+# Ostad Capstone Project - Prometheus, Grafana, Loki Setup
+
+- name: "Monitoring Prerequisites"
+  hosts: monitoring
+  gather_facts: true
+  become: true
+  tags: ['prerequisites', 'monitoring']
+  
+  tasks:
+    - name: Create monitoring users and groups
+      group:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - "{{ prometheus.group }}"
+        - "{{ grafana.group }}"
+        - "{{ loki.group }}"
+        - "{{ node_exporter.group }}"
+        
+    - name: Create monitoring users
+      user:
+        name: "{{ item.user }}"
+        group: "{{ item.group }}"
+        system: true
+        shell: /bin/false
+        home: "{{ item.data_dir }}"
+        create_home: false
+      loop:
+        - { user: "{{ prometheus.user }}", group: "{{ prometheus.group }}", data_dir: "{{ prometheus.data_dir }}" }
+        - { user: "{{ grafana.user }}", group: "{{ grafana.group }}", data_dir: "{{ grafana.data_dir }}" }
+        - { user: "{{ loki.user }}", group: "{{ loki.group }}", data_dir: "{{ loki.data_dir }}" }
+        - { user: "{{ node_exporter.user }}", group: "{{ node_exporter.group }}", data_dir: "/var/lib/node_exporter" }
+        
+    - name: Create monitoring directories
+      file:
+        path: "{{ item.path }}"
+        state: directory
+        owner: "{{ item.owner }}"
+        group: "{{ item.group }}"
+        mode: "{{ item.mode | default('0755') }}"
+      loop:
+        # Prometheus directories
+        - { path: "{{ prometheus.config_dir }}", owner: "{{ prometheus.user }}", group: "{{ prometheus.group }}" }
+        - { path: "{{ prometheus.data_dir }}", owner: "{{ prometheus.user }}", group: "{{ prometheus.group }}" }
+        - { path: "{{ prometheus.log_dir }}", owner: "{{ prometheus.user }}", group: "{{ prometheus.group }}" }
+        - { path: "{{ prometheus.config_dir }}/rules", owner: "{{ prometheus.user }}", group: "{{ prometheus.group }}" }
+        # Grafana directories
+        - { path: "{{ grafana.config_dir }}", owner: "{{ grafana.user }}", group: "{{ grafana.group }}" }
+        - { path: "{{ grafana.data_dir }}", owner: "{{ grafana.user }}", group: "{{ grafana.group }}" }
+        - { path: "{{ grafana.log_dir }}", owner: "{{ grafana.user }}", group: "{{ grafana.group }}" }
+        - { path: "{{ grafana.data_dir }}/dashboards", owner: "{{ grafana.user }}", group: "{{ grafana.group }}" }
+        - { path: "{{ grafana.data_dir }}/plugins", owner: "{{ grafana.user }}", group: "{{ grafana.group }}" }
+        # Loki directories
+        - { path: "{{ loki.config_dir }}", owner: "{{ loki.user }}", group: "{{ loki.group }}" }
+        - { path: "{{ loki.data_dir }}", owner: "{{ loki.user }}", group: "{{ loki.group }}" }
+        - { path: "{{ loki.log_dir }}", owner: "{{ loki.user }}", group: "{{ loki.group }}" }
+        - { path: "/var/lib/loki/chunks", owner: "{{ loki.user }}", group: "{{ loki.group }}" }
+        - { path: "/var/lib/loki/boltdb-shipper-active", owner: "{{ loki.user }}", group: "{{ loki.group }}" }
+        - { path: "/var/lib/loki/boltdb-shipper-cache", owner: "{{ loki.user }}", group: "{{ loki.group }}" }
+
+- name: "Install Node Exporter"
+  hosts: node_exporters
+  become: true
+  tags: ['node-exporter', 'monitoring']
+  
+  tasks:
+    - name: Download Node Exporter
+      get_url:
+        url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter.version }}/node_exporter-{{ node_exporter.version }}.linux-amd64.tar.gz"
+        dest: "/tmp/node_exporter-{{ node_exporter.version }}.linux-amd64.tar.gz"
+        mode: '0644'
+        
+    - name: Extract Node Exporter
+      unarchive:
+        src: "/tmp/node_exporter-{{ node_exporter.version }}.linux-amd64.tar.gz"
+        dest: "/tmp"
+        remote_src: true
+        
+    - name: Install Node Exporter binary
+      copy:
+        src: "/tmp/node_exporter-{{ node_exporter.version }}.linux-amd64/node_exporter"
+        dest: "/usr/local/bin/node_exporter"
+        owner: "{{ node_exporter.user }}"
+        group: "{{ node_exporter.group }}"
+        mode: '0755'
+        remote_src: true
+        
+    - name: Create Node Exporter systemd service
+      template:
+        src: node_exporter.service.j2
+        dest: /etc/systemd/system/node_exporter.service
+      notify: restart node_exporter
+      
+    - name: Start and enable Node Exporter
+      systemd:
+        name: node_exporter
+        enabled: true
+        state: started
+        daemon_reload: true
+        
+  handlers:
+    - name: restart node_exporter
+      systemd:
+        name: node_exporter
+        state: restarted
+        daemon_reload: true
+
+- name: "Install Prometheus"
+  hosts: prometheus_servers
+  become: true
+  tags: ['prometheus', 'monitoring']
+  
+  tasks:
+    - name: Download Prometheus
+      get_url:
+        url: "https://github.com/prometheus/prometheus/releases/download/v{{ prometheus.version }}/prometheus-{{ prometheus.version }}.linux-amd64.tar.gz"
+        dest: "/tmp/prometheus-{{ prometheus.version }}.linux-amd64.tar.gz"
+        mode: '0644'
+        
+    - name: Extract Prometheus
+      unarchive:
+        src: "/tmp/prometheus-{{ prometheus.version }}.linux-amd64.tar.gz"
+        dest: "/tmp"
+        remote_src: true
+        
+    - name: Install Prometheus binaries
+      copy:
+        src: "/tmp/prometheus-{{ prometheus.version }}.linux-amd64/{{ item }}"
+        dest: "/usr/local/bin/{{ item }}"
+        owner: "{{ prometheus.user }}"
+        group: "{{ prometheus.group }}"
+        mode: '0755'
+        remote_src: true
+      loop:
+        - prometheus
+        - promtool
+        
+    - name: Install Prometheus console templates
+      copy:
+        src: "/tmp/prometheus-{{ prometheus.version }}.linux-amd64/{{ item }}"
+        dest: "{{ prometheus.config_dir }}/{{ item }}"
+        owner: "{{ prometheus.user }}"
+        group: "{{ prometheus.group }}"
+        mode: '0644'
+        remote_src: true
+      loop:
+        - consoles
+        - console_libraries
+        
+    - name: Generate Prometheus configuration
+      template:
+        src: prometheus.yml.j2
+        dest: "{{ prometheus.config_dir }}/prometheus.yml"
+        owner: "{{ prometheus.user }}"
+        group: "{{ prometheus.group }}"
+        mode: '0644'
+      notify: restart prometheus
+      
+    - name: Create Prometheus rules
+      template:
+        src: "{{ item }}.j2"
+        dest: "{{ prometheus.config_dir }}/rules/{{ item }}"
+        owner: "{{ prometheus.user }}"
+        group: "{{ prometheus.group }}"
+        mode: '0644'
+      loop:
+        - kubernetes.rules.yml
+        - node.rules.yml
+      notify: restart prometheus
+      
+    - name: Create Prometheus systemd service
+      template:
+        src: prometheus.service.j2
+        dest: /etc/systemd/system/prometheus.service
+      notify: restart prometheus
+      
+    - name: Start and enable Prometheus
+      systemd:
+        name: prometheus
+        enabled: true
+        state: started
+        daemon_reload: true
+        
+  handlers:
+    - name: restart prometheus
+      systemd:
+        name: prometheus
+        state: restarted
+        daemon_reload: true
+
+- name: "Install Loki"
+  hosts: loki_servers
+  become: true
+  tags: ['loki', 'monitoring', 'logs']
+  
+  tasks:
+    - name: Download Loki
+      get_url:
+        url: "https://github.com/grafana/loki/releases/download/v{{ loki.version }}/loki-linux-amd64.zip"
+        dest: "/tmp/loki-linux-amd64.zip"
+        mode: '0644'
+        
+    - name: Extract Loki
+      unarchive:
+        src: "/tmp/loki-linux-amd64.zip"
+        dest: "/tmp"
+        remote_src: true
+        
+    - name: Install Loki binary
+      copy:
+        src: "/tmp/loki-linux-amd64"
+        dest: "/usr/local/bin/loki"
+        owner: "{{ loki.user }}"
+        group: "{{ loki.group }}"
+        mode: '0755'
+        remote_src: true
+        
+    - name: Generate Loki configuration
+      template:
+        src: loki.yml.j2
+        dest: "{{ loki.config_dir }}/loki.yml"
+        owner: "{{ loki.user }}"
+        group: "{{ loki.group }}"
+        mode: '0644'
+      notify: restart loki
+      
+    - name: Create Loki systemd service
+      template:
+        src: loki.service.j2
+        dest: /etc/systemd/system/loki.service
+      notify: restart loki
+      
+    - name: Start and enable Loki
+      systemd:
+        name: loki
+        enabled: true
+        state: started
+        daemon_reload: true
+        
+  handlers:
+    - name: restart loki
+      systemd:
+        name: loki
+        state: restarted
+        daemon_reload: true
+
+- name: "Install Promtail"
+  hosts: kubernetes_cluster
+  become: true
+  tags: ['promtail', 'monitoring', 'logs']
+  
+  tasks:
+    - name: Download Promtail
+      get_url:
+        url: "https://github.com/grafana/loki/releases/download/v{{ promtail.version }}/promtail-linux-amd64.zip"
+        dest: "/tmp/promtail-linux-amd64.zip"
+        mode: '0644'
+        
+    - name: Extract Promtail
+      unarchive:
+        src: "/tmp/promtail-linux-amd64.zip"
+        dest: "/tmp"
+        remote_src: true
+        
+    - name: Install Promtail binary
+      copy:
+        src: "/tmp/promtail-linux-amd64"
+        dest: "/usr/local/bin/promtail"
+        owner: "{{ promtail.user }}"
+        group: "{{ promtail.group }}"
+        mode: '0755'
+        remote_src: true
+        
+    - name: Create Promtail directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        owner: "{{ promtail.user }}"
+        group: "{{ promtail.group }}"
+        mode: '0755'
+      loop:
+        - "{{ promtail.config_dir }}"
+        - "/var/log/promtail"
+        
+    - name: Generate Promtail configuration
+      template:
+        src: promtail.yml.j2
+        dest: "{{ promtail.config_dir }}/promtail.yml"
+        owner: "{{ promtail.user }}"
+        group: "{{ promtail.group }}"
+        mode: '0644'
+      notify: restart promtail
+      
+    - name: Create Promtail systemd service
+      template:
+        src: promtail.service.j2
+        dest: /etc/systemd/system/promtail.service
+      notify: restart promtail
+      
+    - name: Start and enable Promtail
+      systemd:
+        name: promtail
+        enabled: true
+        state: started
+        daemon_reload: true
+        
+  handlers:
+    - name: restart promtail
+      systemd:
+        name: promtail
+        state: restarted
+        daemon_reload: true
+
+- name: "Install Grafana"
+  hosts: grafana_servers
+  become: true
+  tags: ['grafana', 'monitoring']
+  
+  tasks:
+    - name: Install Grafana dependencies
+      apt:
+        name:
+          - software-properties-common
+          - apt-transport-https
+        state: present
+        update_cache: true
+        
+    - name: Add Grafana APT key
+      apt_key:
+        url: https://apt.grafana.com/gpg.key
+        state: present
+        
+    - name: Add Grafana repository
+      apt_repository:
+        repo: "deb https://apt.grafana.com stable main"
+        state: present
+        
+    - name: Install Grafana
+      apt:
+        name: grafana={{ grafana.version }}-1
+        state: present
+        update_cache: true
+        
+    - name: Generate Grafana configuration
+      template:
+        src: grafana.ini.j2
+        dest: "{{ grafana.config_dir }}/grafana.ini"
+        owner: "{{ grafana.user }}"
+        group: "{{ grafana.group }}"
+        mode: '0640'
+      notify: restart grafana
+      
+    - name: Configure Grafana datasources
+      template:
+        src: datasources.yml.j2
+        dest: "{{ grafana.config_dir }}/provisioning/datasources/datasources.yml"
+        owner: "{{ grafana.user }}"
+        group: "{{ grafana.group }}"
+        mode: '0644'
+      notify: restart grafana
+      
+    - name: Configure Grafana dashboards
+      template:
+        src: dashboards.yml.j2
+        dest: "{{ grafana.config_dir }}/provisioning/dashboards/dashboards.yml"
+        owner: "{{ grafana.user }}"
+        group: "{{ grafana.group }}"
+        mode: '0644'
+      notify: restart grafana
+      
+    - name: Create dashboard directory
+      file:
+        path: /opt/dashboards
+        state: directory
+        mode: '0755'
+        
+    - name: Download Grafana dashboards
+      get_url:
+        url: "https://grafana.com/api/dashboards/{{ item.id }}/revisions/1/download"
+        dest: "/opt/dashboards/{{ item.title | replace(' ', '_') }}.json"
+        mode: '0644'
+      loop: "{{ dashboards | dict2items | map(attribute='value') | list }}"
+      
+    - name: Start and enable Grafana
+      systemd:
+        name: grafana-server
+        enabled: true
+        state: started
+        daemon_reload: true
+        
+  handlers:
+    - name: restart grafana
+      systemd:
+        name: grafana-server
+        state: restarted
+
+- name: "Configure Kubernetes Monitoring"
+  hosts: control_plane
+  become: true
+  tags: ['k8s-monitoring', 'monitoring']
+  
+  tasks:
+    - name: Create monitoring namespace
+      k8s:
+        definition:
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: monitoring
+        kubeconfig: /etc/kubernetes/admin.conf
+        
+    - name: Deploy Prometheus in Kubernetes
+      k8s:
+        definition:
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: prometheus
+            namespace: monitoring
+          spec:
+            replicas: 1
+            selector:
+              matchLabels:
+                app: prometheus
+            template:
+              metadata:
+                labels:
+                  app: prometheus
+              spec:
+                containers:
+                - name: prometheus
+                  image: "prom/prometheus:v{{ prometheus.version }}"
+                  ports:
+                  - containerPort: 9090
+                  volumeMounts:
+                  - name: prometheus-config
+                    mountPath: /etc/prometheus/prometheus.yml
+                    subPath: prometheus.yml
+                volumes:
+                - name: prometheus-config
+                  configMap:
+                    name: prometheus-config
+        kubeconfig: /etc/kubernetes/admin.conf
+        
+    - name: Create Prometheus service
+      k8s:
+        definition:
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: prometheus
+            namespace: monitoring
+          spec:
+            selector:
+              app: prometheus
+            ports:
+            - port: 9090
+              targetPort: 9090
+              nodePort: 30090
+            type: NodePort
+        kubeconfig: /etc/kubernetes/admin.conf
+
+- name: "Monitoring Verification"
+  hosts: monitoring
+  become: true
+  tags: ['verify', 'monitoring']
+  
+  tasks:
+    - name: Wait for Prometheus to be ready
+      uri:
+        url: "http://localhost:{{ prometheus.port }}/-/ready"
+        method: GET
+        timeout: 30
+      register: prometheus_ready
+      until: prometheus_ready.status == 200
+      retries: 12
+      delay: 10
+      
+    - name: Wait for Grafana to be ready
+      uri:
+        url: "http://localhost:{{ grafana.port }}/api/health"
+        method: GET
+        timeout: 30
+      register: grafana_ready
+      until: grafana_ready.status == 200
+      retries: 12
+      delay: 10
+      
+    - name: Verify Node Exporter metrics
+      uri:
+        url: "http://localhost:{{ node_exporter.port }}/metrics"
+        method: GET
+        timeout: 10
+      register: node_exporter_metrics
+      
+    - name: Display monitoring summary
+      debug:
+        msg: |
+          🎉 Monitoring Stack Deployment Complete!
+          ========================================
+          
+          Services Status:
+          ✓ Prometheus: Running on port {{ prometheus.port }}
+          ✓ Grafana: Running on port {{ grafana.port }}
+          ✓ Loki: Running on port {{ loki.port }}
+          ✓ Node Exporter: Running on port {{ node_exporter.port }}
+          
+          Access URLs:
+          • Prometheus: http://{{ ansible_host }}:{{ prometheus.port }}
+          • Grafana: http://{{ ansible_host }}:{{ grafana.port }}
+          • Loki: http://{{ ansible_host }}:{{ loki.port }}
+          
+          Grafana Login:
+          • Username: {{ grafana.admin.user }}
+          • Password: {{ grafana.admin.password }}
+          
+          Dashboard Files:
+          • Location: /opt/dashboards/
+          • Import via Grafana UI for visualization
+          
+          Monitoring Features:
+          ✓ System metrics collection
+          ✓ Kubernetes cluster monitoring
+          ✓ Centralized log aggregation
+          ✓ Alert rules configured
+          ✓ Multi-node monitoring

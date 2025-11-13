@@ -1,0 +1,102 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: argocd-server
+  namespace: argocd
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-cm
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-cm
+    app.kubernetes.io/part-of: argocd
+data:
+  # Application configurations
+  application.instanceLabelKey: argocd.argoproj.io/instance
+  
+  # Repository configurations
+  repositories: |
+    - type: git
+      url: https://github.com/mdarifahammedreza/Ostad-Capstone-project.git
+      name: ostad-capstone-repo
+  
+  # OIDC configuration (optional)
+  url: https://argocd.ostad-capstone.com
+  
+  # Dex configuration for authentication
+  dex.config: |
+    connectors: []
+    staticClients:
+    - id: argo-workflows-sso
+      name: Argo Workflow
+      redirectURIs:
+      - https://argocd.ostad-capstone.com/oauth2/callback
+      secretEnv: ARGO_WORKFLOWS_SSO_CLIENT_SECRET
+  
+  # Resource customizations
+  resource.customizations: |
+    argoproj.io/Application:
+      health.lua: |
+        hs = {}
+        hs.status = "Progressing"
+        hs.message = ""
+        if obj.status ~= nil then
+          if obj.status.health ~= nil then
+            hs.status = obj.status.health.status
+            if obj.status.health.message ~= nil then
+              hs.message = obj.status.health.message
+            end
+          end
+        end
+        return hs
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: argocd-rbac-cm
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-rbac-cm
+    app.kubernetes.io/part-of: argocd
+data:
+  # RBAC configuration
+  policy.default: role:readonly
+  policy.csv: |
+    # Admin role
+    p, role:admin, applications, *, */*, allow
+    p, role:admin, clusters, *, *, allow
+    p, role:admin, repositories, *, *, allow
+    
+    # Developer role
+    p, role:developer, applications, *, ostad-capstone/*, allow
+    p, role:developer, applications, sync, ostad-capstone/*, allow
+    p, role:developer, applications, get, ostad-capstone/*, allow
+    p, role:developer, applications, create, ostad-capstone/*, allow
+    p, role:developer, applications, update, ostad-capstone/*, allow
+    p, role:developer, applications, delete, ostad-capstone/*, allow
+    
+    # ReadOnly role
+    p, role:readonly, applications, get, */*, allow
+    p, role:readonly, clusters, get, *, allow
+    p, role:readonly, repositories, get, *, allow
+    
+    # Group mappings (modify based on your authentication setup)
+    g, argocd-admin, role:admin
+    g, ostad-developers, role:developer
+    g, ostad-viewers, role:readonly
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: argocd-secret
+  namespace: argocd
+  labels:
+    app.kubernetes.io/name: argocd-secret
+    app.kubernetes.io/part-of: argocd
+type: Opaque
+data:
+  # Generate with: htpasswd -nbBC 10 "" $PASSWORD | tr -d ':\n' | sed 's/$2y/$2a/' | base64 -w0
+  admin.password: JDJhJDEwJGJaOUwyQVVXWmtVTnVvOVBWc1JzVy5wZ0E2VklSRlV0eml5V1FNNkRxVUZkQjlWUDdLR04y  # admin123
+  admin.passwordMtime: MjAyNC0wMS0wMVQwMDowMDowMFo=  # base64 encoded timestamp

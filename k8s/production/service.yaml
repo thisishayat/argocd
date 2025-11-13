@@ -1,0 +1,18 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ostad-capstone-service
+  namespace: ostad-production
+  labels:
+    app: ostad-capstone
+    environment: production
+spec:
+  type: ClusterIP
+  ports:
+  - port: 80
+    targetPort: 80
+    protocol: TCP
+    name: http
+  selector:
+    app: ostad-capstone
+    environment: production

@@ -1,0 +1,87 @@
+# Kubernetes Cluster Configuration
+# Ostad Capstone Project - Kubernetes Specific Variables
+
+# Kubernetes Version and Configuration
+kubernetes_version: "1.28"
+kubernetes_full_version: "1.28.2-00"
+containerd_version: "1.7.8-1"
+
+# Network Configuration
+pod_network_cidr: "10.244.0.0/16"
+service_network_cidr: "10.96.0.0/12"
+cluster_dns: "10.96.0.10"
+cluster_domain: "cluster.local"
+
+# kubeadm Configuration
+kubeadm_config:
+  api_server_port: 6443
+  token_ttl: "24h"
+  certificate_key_ttl: "2h"
+
+# CNI Plugin Configuration
+cni_plugin: "flannel"  # Options: flannel, calico, weave
+flannel_version: "v0.22.3"
+calico_version: "v3.26.3"
+
+# Kubelet Configuration
+kubelet_config:
+  max_pods: 110
+  cluster_dns: "{{ cluster_dns }}"
+  cluster_domain: "{{ cluster_domain }}"
+  container_runtime_endpoint: "unix:///var/run/containerd/containerd.sock"
+  
+# System Requirements
+system_requirements:
+  min_ram_gb: 2
+  min_cpu_cores: 2
+  min_disk_gb: 20
+
+# Kubernetes Components
+k8s_components:
+  - kubelet
+  - kubeadm
+  - kubectl
+
+# Container Runtime
+container_runtime: "containerd"
+containerd_config_dir: "/etc/containerd"
+containerd_data_dir: "/var/lib/containerd"
+
+# Etcd Configuration
+etcd_data_dir: "/var/lib/etcd"
+etcd_backup_dir: "/opt/etcd-backup"
+
+# Kubernetes Directories
+k8s_config_dir: "/etc/kubernetes"
+k8s_manifests_dir: "/etc/kubernetes/manifests"
+k8s_pki_dir: "/etc/kubernetes/pki"
+kubelet_config_dir: "/var/lib/kubelet"
+
+# Add-ons Configuration
+kubernetes_addons:
+  dashboard:
+    enabled: true
+    version: "v2.7.0"
+    namespace: "kubernetes-dashboard"
+  metrics_server:
+    enabled: true
+    version: "v0.6.4"
+  ingress_nginx:
+    enabled: true
+    version: "v1.8.2"
+
+# Cluster Initialization Timeout
+cluster_init_timeout: "10m"
+node_join_timeout: "5m"
+
+# Health Check Configuration
+k8s_health_checks:
+  api_server_check: true
+  etcd_check: true
+  kubelet_check: true
+  node_ready_check: true
+
+# Logging Configuration
+k8s_log_level: 2
+audit_log_enabled: true
+audit_log_path: "/var/log/kubernetes/audit.log"

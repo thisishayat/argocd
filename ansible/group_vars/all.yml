@@ -1,0 +1,76 @@
+# Group variables for all hosts
+# Ostad Capstone Project - Global Configuration
+
+# Project Information
+project_name: "ostad-capstone"
+environment: "production"
+owner: "Md Arif Ahammedrez"
+
+# System Configuration
+timezone: "UTC"
+ntp_servers:
+  - "0.pool.ntp.org"
+  - "1.pool.ntp.org"
+  - "2.pool.ntp.org"
+
+# Package Management
+system_packages:
+  - curl
+  - wget
+  - unzip
+  - vim
+  - htop
+  - git
+  - jq
+  - awscli
+  - tree
+  - net-tools
+  - telnet
+  - nmap
+
+# Security Configuration
+ssh_config:
+  port: 22
+  protocol: 2
+  permit_root_login: "no"
+  password_authentication: "no"
+  pubkey_authentication: "yes"
+  max_auth_tries: 3
+
+# Log Configuration
+log_rotation:
+  daily: true
+  rotate: 7
+  compress: true
+  delaycompress: true
+  missingok: true
+
+# Resource Limits
+resource_limits:
+  nofile_soft: 65536
+  nofile_hard: 65536
+  nproc_soft: 32768
+  nproc_hard: 32768
+
+# Firewall Configuration (ufw)
+firewall_enabled: true
+firewall_default_policy_incoming: deny
+firewall_default_policy_outgoing: allow
+
+# Health Check Configuration
+health_check:
+  timeout: 30
+  retries: 3
+  delay: 5
+  
+# Backup Configuration
+backup_retention_days: 7
+backup_directory: "/opt/backups"
+
+# AWS Configuration
+aws_region: "us-east-1"
+aws_cli_version: "2"
+
+# Docker Configuration (if needed)
+docker_version: "24.0"
+docker_compose_version: "2.21.0"

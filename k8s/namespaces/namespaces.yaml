@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: dev
+  labels:
+    name: dev
+    environment: development
+    project: ostad-capstone
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stage
+  labels:
+    name: stage
+    environment: staging
+    project: ostad-capstone
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prod
+  labels:
+    name: prod
+    environment: production
+    project: ostad-capstone
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+  labels:
+    name: argocd
+    component: gitops
+    project: ostad-capstone
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    name: monitoring
+    component: observability
+    project: ostad-capstone
