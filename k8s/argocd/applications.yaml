@@ -11,7 +11,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/mdarifahammedreza/Ostad-Capstone-project.git
+    repoURL: https://github.com/thisishayat/argocd.git
     targetRevision: dev
     path: k8s/applications/dev
   destination:
@@ -47,7 +47,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/mdarifahammedreza/Ostad-Capstone-project.git
+    repoURL:  https://github.com/thisishayat/argocd.git
     targetRevision: stage
     path: k8s/applications/stage
   destination:
@@ -83,7 +83,7 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/mdarifahammedreza/Ostad-Capstone-project.git
+    repoURL: https://github.com/thisishayat/argocd.git
     targetRevision: main
     path: k8s/applications/prod
   destination:
